@@ -603,6 +603,36 @@ class PhpIpamProvider implements IPAMProvider {
     }
 
     /**
+    * Gets a list of all subnets capable of containing IPs
+    * @param client the HttpApiClient session for calling the API
+    * @param token the authentication token
+    * @param poolServer The Integration Object contains all the saved information regarding configuration of the IPAM Provider.
+    * @param subnetId the top level subnet ID being searched
+    * @return List of leaf subnet IDs (subnets not containing any nested subnets)
+    */
+    List<String> getLeafSubnetIds(HttpApiClient client, String token, NetworkPoolServer poolServer, String subnetId) {
+        List<String> leafSubnetIds = []
+        // get immediate nested subnets
+        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL:poolServer.ignoreSsl, queryParams: [:])
+        requestOptions.queryParams.id = subnetId
+        requestOptions.queryParams.id2 = 'slaves'
+
+        def nestedSubnetResults = callApi(client, poolServer.serviceUrl, 'subnets', getAppId(poolServer), token, requestOptions, 'GET')
+        // return leaf subnet if no nested subnets exist
+        if (!nestedSubnetResults.success) {
+            leafSubnetIds << subnetId.toString()
+            return leafSubnetIds
+        }
+        // check child subnets
+        List<Map> children = nestedSubnetResults.data
+        children.each { Map child ->
+            leafSubnetIds.addAll(getLeafSubnetIds(client, token, poolServer, child.id.toString()))
+        }
+
+        return leafSubnetIds
+    }
+
+    /**
      * Creates a Host record on the target {@link NetworkPool} within the {@link NetworkPoolServer} integration.
      * @param poolServer The Integration Object contains all the saved information regarding configuration of the IPAM Provider.
      * @param networkPool the NetworkPool currently being operated on.
@@ -626,24 +656,51 @@ class PhpIpamProvider implements IPAMProvider {
             def tokenResults = getToken(client,poolServer)
             if(tokenResults.success) {
                 String token = tokenResults.data.token as String
+                List<String> validSubnetIds = getLeafSubnetIds(client, token, poolServer, networkPool.externalId)
                 if(networkPoolIp.ipAddress) {
-                    // create requested IP
-                    // POST /addresses?subnetId=
+                    // check search if requested IP exists in any valid subnet
                     HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL:poolServer.ignoreSsl, queryParams: [:])
-                    requestOptions.queryParams.subnetId = networkPool.externalId
-                    requestOptions.queryParams.hostname = hostname
-                    requestOptions.queryParams.ip = networkPoolIp.ipAddress
+                    requestOptions.queryParams.id = 'search'
+                    requestOptions.queryParams.id2 = networkPoolIp.ipAddress
 
-                    def body = [:]
-                    if(networkPoolIp.macAddress) {
-                        requestOptions.queryParams.mac = networkPoolIp.macAddress
+                    def searchIpResults = callApi(client, poolServer.serviceUrl, 'addresses', getAppId(poolServer), token, requestOptions, 'GET')
+                    def ipExists = searchIpResults.data?.find { match ->
+                        validSubnetIds.contains(match.subnetId.toString())
                     }
-                    def createIpResults = callApi(client, poolServer.serviceUrl, 'addresses', getAppId(poolServer), token, requestOptions, 'POST')
-                    if (!createIpResults.success) {
-                        return createIpResults
+                    if(!ipExists){
+                        // TODO
+                        // get IDs for every subnet that contain the address (/subnets/overlapping/$IP/32/)
+                        // filter subnet IDs to only include those that exist in Valid subnet IDs
+                        // post request to reserve IP on all subnets
+                        
+                        // update lines for overlapping nested subnets
+                        // create requested IP
+                        // POST /addresses?subnetId=
+                        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL:poolServer.ignoreSsl, queryParams: [:])
+                        requestOptions.queryParams.subnetId = networkPool.externalId
+                        requestOptions.queryParams.hostname = hostname
+                        requestOptions.queryParams.ip = networkPoolIp.ipAddress
+
+                        def body = [:]
+                        if(networkPoolIp.macAddress) {
+                            requestOptions.queryParams.mac = networkPoolIp.macAddress
+                        }
+                        def createIpResults = callApi(client, poolServer.serviceUrl, 'addresses', getAppId(poolServer), token, requestOptions, 'POST')
+                        if (!createIpResults.success) {
+                            return createIpResults
+                        }
+                        networkPoolIp.externalId = createIpResults.data.id.toString()
+                    }else{
+                        return searchIpResults
                     }
-                    networkPoolIp.externalId = createIpResults.data.id.toString()
                 } else {
+                    //if more than one subnet
+                    //    get all used IPs in valid subnets
+                    //    find next available IP
+                    //    request first free IP
+                    //  else
+                    //    get first free
+
                     // create next free IP
                     // POST /addresses/first_free?subnetId=
                     HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL:poolServer.ignoreSsl, queryParams: [:])
