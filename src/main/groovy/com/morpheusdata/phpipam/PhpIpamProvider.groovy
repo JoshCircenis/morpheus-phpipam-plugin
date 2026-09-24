@@ -658,20 +658,37 @@ class PhpIpamProvider implements IPAMProvider {
                 String token = tokenResults.data.token as String
                 List<String> validSubnetIds = getLeafSubnetIds(client, token, poolServer, networkPool.externalId)
                 if(networkPoolIp.ipAddress) {
-                    // check search if requested IP exists in any valid subnet
+                    // check search if requested IP is reserved in any valid subnet
                     HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL:poolServer.ignoreSsl, queryParams: [:])
                     requestOptions.queryParams.id = 'search'
                     requestOptions.queryParams.id2 = networkPoolIp.ipAddress
 
                     def searchIpResults = callApi(client, poolServer.serviceUrl, 'addresses', getAppId(poolServer), token, requestOptions, 'GET')
-                    def ipExists = searchIpResults.data?.find { match ->
-                        validSubnetIds.contains(match.subnetId.toString())
+                    def ipReserved = searchIpResults.data?.subnets?.data?.find { match ->
+                        validSubnetIds.contains(match.id.toString())
                     }
-                    if(!ipExists){
-                        // TODO
-                        // get IDs for every subnet that contain the address (/subnets/overlapping/$IP/32/)
-                        // filter subnet IDs to only include those that exist in Valid subnet IDs
-                        // post request to reserve IP on all subnets
+                    if(!ipReserved){
+                        // get IDs for every subnet that contains the address
+                        // GET /subnets/overlapping/$IP/32/
+                        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL:poolServer.ignoreSsl, queryParams: [:])
+                        requestOptions.queryParams.id = 'overlapping'
+                        requestOptions.queryParams.id2 = "$networkPoolIp.ipAddress/32"
+
+                        def overlappingSubnetResults = callApi(client, poolServer.serviceUrl, 'subnets', getAppId(poolServer), token, requestOptions, 'GET')
+
+                        List<String> overlappingSubnetIds = []
+                        List<Map> children = overlappingSubnetResults.data
+                        children.each { Map child ->
+                            if (validSubnetIds.contains(child.id.toString())) {
+                                overlappingSubnetIds.add(child.id.toString())
+                            }
+                        }
+                        
+                        if (overlappingSubnetIds.size() != 0) {
+
+                        } else {
+                            
+                        }
                         
                         // update lines for overlapping nested subnets
                         // create requested IP
